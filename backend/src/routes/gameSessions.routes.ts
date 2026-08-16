@@ -1,0 +1,40 @@
+import { Router } from "express";
+import {
+  startGameSession,
+  getPlayerQuestions,
+  submitAnswer,
+  submitTimeout,
+  getPlayerResult,
+  finishPlayerTurn,
+  getFinalResults,
+} from "../controllers/gameSessions.controller";
+const router = Router();
+
+router.post("/start", startGameSession);
+
+
+router.get(
+  "/:sessionId/player/:playerSlot/questions",
+  getPlayerQuestions
+);
+router.post(
+  "/:sessionId/player/:playerSlot/answer",
+  submitAnswer
+);
+router.post(
+  "/:sessionId/player/:playerSlot/timeout",
+  submitTimeout
+);
+router.get(
+  "/:sessionId/player/:playerSlot/result",
+  getPlayerResult
+);
+router.post(
+  "/:sessionId/player/:playerSlot/finish",
+  finishPlayerTurn
+);
+router.get(
+  "/:sessionId/results",
+  getFinalResults
+);
+export default router;

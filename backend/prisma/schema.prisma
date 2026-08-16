@@ -1,0 +1,149 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+model Subject {
+  id         Int      @id @default(autoincrement())
+  name       String
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  lessons Lesson[]
+}
+
+model Grade {
+  id           Int      @id @default(autoincrement())
+  name         String
+  grade_number Int
+  created_at   DateTime @default(now())
+
+  lessons Lesson[]
+}
+
+model Lesson {
+  id          Int      @id @default(autoincrement())
+  subject_id  Int
+  grade_id    Int
+  name        String
+  description String?
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  subject Subject @relation(fields: [subject_id], references: [id])
+  grade   Grade   @relation(fields: [grade_id], references: [id])
+  quizzes Quiz[]
+}
+model Quiz {
+  id                   Int      @id @default(autoincrement())
+  lesson_id            Int
+  title                String
+  description          String
+  questions_per_player Int
+  status               String   @default("draft")
+  created_at           DateTime @default(now())
+  updated_at           DateTime @updatedAt
+
+  lesson         Lesson         @relation(fields: [lesson_id], references: [id])
+  question_pairs QuestionPair[]
+  game_sessions GameSession[]
+}
+
+model QuestionPair {
+  id                 Int      @id @default(autoincrement())
+  quiz_id            Int
+  question_order     Int
+  difficulty         String?
+  timer_seconds      Int
+  learning_objective String?
+  created_at         DateTime @default(now())
+  updated_at         DateTime @updatedAt
+
+  quiz      Quiz       @relation(fields: [quiz_id], references: [id])
+  questions Question[]
+
+  @@unique([quiz_id, question_order])
+}
+
+model Question {
+  id               Int      @id @default(autoincrement())
+  question_pair_id Int
+  player_set       String
+  question_text    String
+  explanation      String
+  image_url        String?
+  created_at       DateTime @default(now())
+  updated_at       DateTime @updatedAt
+
+  question_pair QuestionPair @relation(fields: [question_pair_id], references: [id])
+  options       Option[]
+
+  @@unique([question_pair_id, player_set])
+  player_answers PlayerAnswer[]
+}
+
+model Option {
+  id           Int      @id @default(autoincrement())
+  question_id  Int
+  option_order Int
+  option_text  String
+  is_correct   Boolean
+  created_at   DateTime @default(now())
+
+  question Question @relation(fields: [question_id], references: [id])
+
+  @@unique([question_id, option_order])
+  selected_in_answers PlayerAnswer[] @relation("SelectedOption")
+}
+model GameSession {
+  id                     Int       @id @default(autoincrement())
+  quiz_id                Int
+  status                 String
+  current_player_slot    Int?
+  current_question_order Int?
+  started_at             DateTime?
+  completed_at           DateTime?
+  created_at             DateTime  @default(now())
+
+  quiz    Quiz            @relation(fields: [quiz_id], references: [id])
+  players SessionPlayer[]
+}
+
+model SessionPlayer {
+  id              Int       @id @default(autoincrement())
+  game_session_id Int
+  player_slot     Int
+  display_name    String
+  started_at      DateTime?
+  completed_at    DateTime?
+
+  game_session GameSession  @relation(fields: [game_session_id], references: [id])
+  answers      PlayerAnswer[]
+
+  @@unique([game_session_id, player_slot])
+}
+
+model PlayerAnswer {
+  id                    Int       @id @default(autoincrement())
+  session_player_id     Int
+  question_id           Int
+  selected_option_id    Int?
+  is_correct            Boolean
+  timed_out             Boolean
+  response_time_seconds Float?
+  answered_at           DateTime?
+
+  session_player  SessionPlayer @relation(fields: [session_player_id], references: [id])
+  question        Question      @relation(fields: [question_id], references: [id])
+  selected_option Option?       @relation("SelectedOption", fields: [selected_option_id], references: [id])
+
+  @@unique([session_player_id, question_id])
+}
