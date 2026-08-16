@@ -7,6 +7,7 @@ import PlayerSetup from "./pages/game/PlayerSetup";
 import Instructions from "./pages/game/Instructions";
 import PlayerIntro from "./pages/game/PlayerIntro";
 import QuestionScreen from "./pages/game/QuestionScreen";
+import PlayerHandoff from "./pages/game/PlayerHandoff";
 import FinalResults from "./pages/game/FinalResults";
 
 function App() {
@@ -29,6 +30,10 @@ function App() {
 <Route
   path="/game/session/:sessionId/player/:playerSlot"
   element={<QuestionScreen />}
+/>
+<Route
+  path="/game/session/:sessionId/handoff/:nextSlot"
+  element={<PlayerHandoff />}
 />
 <Route
   path="/game/session/:sessionId/results"

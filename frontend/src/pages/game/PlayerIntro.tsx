@@ -34,6 +34,10 @@ function PlayerIntro() {
             state: {
               playerName: player1,
               quizId,
+              // Carried through so the handoff screen can name the next
+              // contestant without an extra request.
+              player1,
+              player2,
             },
           });
         }, 1200);

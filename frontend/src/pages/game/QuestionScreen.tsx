@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useRef, useState } from "react";
+import type { CSSProperties } from "react";
+import { useLocation, useParams } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import {
   finishPlayerTurn,
@@ -7,6 +8,58 @@ import {
   submitAnswer,
   submitTimeout,
 } from "../../services/api";
+import { playCue, primeAudio } from "../../lib/sound";
+import ContestantBadge from "../../components/game/ContestantBadge";
+import MuteToggle from "../../components/game/MuteToggle";
+import ProgressTrack from "../../components/game/ProgressTrack";
+import type { QuestionMark } from "../../components/game/ProgressTrack";
+import TimerRing from "../../components/game/TimerRing";
+
+const OPTION_KEYS = ["أ", "ب", "ج", "د"];
+
+const DIFFICULTY_LABELS: Record<string, string> = {
+  easy: "سهل",
+  medium: "متوسط",
+  hard: "صعب",
+};
+
+/** Seconds left at which the low-time warning starts pipping. */
+const WARNING_THRESHOLD = 5;
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function CrossIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  );
+}
+
+function ClockIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <polyline points="12 7 12 12 15 14" />
+    </svg>
+  );
+}
+
+function ArrowIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <line x1="19" y1="12" x2="5" y2="12" />
+      <polyline points="12 19 5 12 12 5" />
+    </svg>
+  );
+}
 
 function QuestionScreen() {
   const { sessionId, playerSlot } = useParams();
@@ -21,6 +74,19 @@ function QuestionScreen() {
 
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const navigate = useNavigate();
+
+  // --- presentation-only state ------------------------------------------
+  const location = useLocation();
+  const nextPlayerName =
+    (location.state as { player2?: string } | null)?.player2 ?? "";
+
+  /** Mirrors the feedback already shown on screen, for the progress track. */
+  const [marks, setMarks] = useState<QuestionMark[]>([]);
+
+  // Sound guards: each ref makes sure a cue fires at most once per event.
+  const questionCuedRef = useRef<number | null>(null);
+  const feedbackCuedRef = useRef<unknown>(null);
+  const warnedAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     async function loadQuestions() {
@@ -119,7 +185,60 @@ function QuestionScreen() {
   setFeedback(null);
   setSubmitting(false);
   setTimeRemaining(null);
+
+  // presentation-only resets
+  setMarks([]);
+  questionCuedRef.current = null;
+  feedbackCuedRef.current = null;
+  warnedAtRef.current = null;
 }, [sessionId, playerSlot]);
+
+  // Unlock the audio context — this screen is only reachable after a tap.
+  useEffect(() => {
+    primeAudio();
+  }, []);
+
+  // Cue: a new question is on screen.
+  useEffect(() => {
+    if (!data) return;
+    if (questionCuedRef.current === currentIndex) return;
+
+    questionCuedRef.current = currentIndex;
+    warnedAtRef.current = null;
+    playCue("question");
+  }, [data, currentIndex]);
+
+  // Cue: the clock is running out (one pip per remaining second).
+  useEffect(() => {
+    if (feedback || timeRemaining === null) return;
+    if (timeRemaining <= 0 || timeRemaining > WARNING_THRESHOLD) return;
+    if (warnedAtRef.current === timeRemaining) return;
+
+    warnedAtRef.current = timeRemaining;
+    playCue("warning");
+  }, [timeRemaining, feedback]);
+
+  // Cue: the result landed. Also records the outcome for the progress track.
+  useEffect(() => {
+    if (!feedback) return;
+    if (feedbackCuedRef.current === feedback) return;
+
+    feedbackCuedRef.current = feedback;
+
+    playCue(
+      feedback.timed_out
+        ? "timeout"
+        : feedback.is_correct
+        ? "correct"
+        : "wrong"
+    );
+
+    setMarks((current) => {
+      const next = [...current];
+      next[currentIndex] = feedback.is_correct ? "correct" : "wrong";
+      return next;
+    });
+  }, [feedback, currentIndex]);
 
   async function handleAnswer(optionId: number) {
     if (
@@ -131,6 +250,8 @@ function QuestionScreen() {
     ) {
       return;
     }
+
+    playCue("select");
 
     const currentQuestion = data.questions[currentIndex];
 
@@ -161,17 +282,49 @@ function QuestionScreen() {
     }
   }
 
+  async function handleNext() {
+    if (currentIndex < data.questions.length - 1) {
+      setCurrentIndex((current) => current + 1);
+      setSelectedOptionId(null);
+      setFeedback(null);
+      return;
+    }
+
+    try {
+      await finishPlayerTurn(
+        Number(sessionId),
+        Number(playerSlot)
+      );
+
+      if (Number(playerSlot) === 1) {
+        // Hand over to a dedicated screen — the second contestant starts
+        // only when she explicitly presses the start button there.
+        navigate(`/game/session/${sessionId}/handoff/2`, {
+          state: {
+            previousPlayerName: data.display_name,
+            nextPlayerName,
+          },
+        });
+      } else {
+        navigate(`/game/session/${sessionId}/results`);
+      }
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : "تعذر إنهاء الجولة"
+      );
+    }
+  }
+
   if (error) {
     return (
-      <div
-        dir="rtl"
-        className="min-h-screen bg-rose-50 flex items-center justify-center p-6"
-      >
-        <div className="bg-white rounded-3xl shadow-xl p-8 max-w-lg w-full text-center">
-          <div className="text-5xl mb-4">😵</div>
-
-          <p className="text-red-600 font-bold text-xl">
-            {error}
+      <div dir="rtl" className="q-scope q-stage q-stage--center">
+        <div className="q-panel q-panel--error" role="alert">
+          <span className="q-panel__eyebrow">حدث خطأ</span>
+          <h1 className="q-panel__title">{error}</h1>
+          <p className="q-panel__text">
+            حاولي تحديث الصفحة أو العودة إلى المعلّم للمتابعة.
           </p>
         </div>
       </div>
@@ -180,200 +333,188 @@ function QuestionScreen() {
 
   if (!data) {
     return (
-      <div className="min-h-screen bg-violet-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl mb-4 animate-bounce">🎯</div>
+      <div dir="rtl" className="q-scope q-stage q-stage--center">
+        <div className="q-panel">
+          <div className="q-loader" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
 
-          <p className="font-bold text-2xl text-violet-700">
-            جاري تجهيز السؤال...
-          </p>
+          <span className="q-panel__eyebrow">استعدي</span>
+          <h1 className="q-panel__title">جاري تجهيز السؤال</h1>
         </div>
       </div>
     );
   }
 
   const currentQuestion = data.questions[currentIndex];
+  const totalQuestions = data.questions.length;
+  const slot = Number(playerSlot);
+
+  const feedbackState = feedback
+    ? feedback.timed_out
+      ? "timeout"
+      : feedback.is_correct
+      ? "correct"
+      : "wrong"
+    : undefined;
+
+  const difficultyLabel = currentQuestion.difficulty
+    ? DIFFICULTY_LABELS[currentQuestion.difficulty] ?? currentQuestion.difficulty
+    : null;
+
+  const isLastQuestion = currentIndex >= totalQuestions - 1;
 
   return (
     <div
       dir="rtl"
-      className="min-h-screen bg-gradient-to-br from-violet-600 via-fuchsia-500 to-orange-400 p-5 md:p-8"
+      className="q-scope q-stage"
+      data-feedback={feedback ? "true" : "false"}
     >
-      <div className="max-w-5xl mx-auto">
-        <div className="flex items-center justify-between text-white mb-5">
-          <div>
-            <p className="text-white/70 text-sm">
-              المتسابقة الحالية
-            </p>
+      <header className="q-hud">
+        <ContestantBadge name={data.display_name} slot={slot} />
 
-            <h2 className="text-2xl md:text-3xl font-black">
-              🚀 {data.display_name}
-            </h2>
-          </div>
+        <div className="q-hud__center">
+          <p className="q-counter">
+            السؤال <b>{currentIndex + 1}</b> من {totalQuestions}
+          </p>
 
-          <div className="bg-white/20 backdrop-blur px-5 py-3 rounded-2xl font-black">
-            سؤال {currentIndex + 1} / {data.questions.length}
-          </div>
-        </div>
-
-        <div className="w-full h-3 bg-white/20 rounded-full mb-6 overflow-hidden">
-          <div
-            className="h-full bg-white rounded-full transition-all duration-500"
-            style={{
-              width: `${
-                ((currentIndex + 1) / data.questions.length) * 100
-              }%`,
-            }}
+          <ProgressTrack
+            total={totalQuestions}
+            currentIndex={currentIndex}
+            marks={marks}
           />
         </div>
 
-        <div className="bg-white rounded-[32px] shadow-2xl p-6 md:p-10">
-          <div className="flex items-center justify-between gap-4 mb-8">
-            <span className="bg-yellow-100 text-yellow-700 px-4 py-2 rounded-full font-black">
-              🧠 ركّزي منيح!
+        <div className="q-hud__side">
+          <MuteToggle />
+
+          <TimerRing
+            seconds={timeRemaining}
+            total={currentQuestion.timer_seconds}
+          />
+        </div>
+      </header>
+
+      <main className="q-main">
+        {/* Keyed on the question id so every question replays the entry motion. */}
+        <section className="q-card" key={currentQuestion.question.id}>
+          <div className="q-card__top">
+            <span className="q-chip q-chip--accent">
+              مجموعة {data.player_set}
             </span>
 
-            <span className="bg-violet-100 text-violet-700 px-4 py-2 rounded-full font-black">
-              ⏱️ {timeRemaining ?? "..."} ثانية
-            </span>
+            {difficultyLabel && (
+              <span className="q-chip">{difficultyLabel}</span>
+            )}
           </div>
 
-          <h1 className="text-2xl md:text-4xl font-black text-slate-800 text-center leading-relaxed mb-10">
+          {currentQuestion.question.image_url && (
+            <img
+              className="q-card__media"
+              src={currentQuestion.question.image_url}
+              alt=""
+            />
+          )}
+
+          <h1 className="q-question">
             {currentQuestion.question.question_text}
           </h1>
 
-          <div className="grid md:grid-cols-2 gap-4">
+          <div className="q-options">
             {currentQuestion.question.options.map(
               (option: any, index: number) => {
-                const isSelected =
-                  selectedOptionId === option.id;
+                const isSelected = selectedOptionId === option.id;
+                const isCorrectOption =
+                  feedback?.correct_option?.id === option.id;
 
-                let className =
-                  "relative border-2 rounded-2xl p-5 text-right text-lg md:text-xl font-bold transition-all duration-200 ";
+                let state: string;
 
                 if (!feedback) {
-                  className += isSelected
-                    ? "border-violet-600 bg-violet-100 scale-[1.02]"
-                    : "border-slate-200 bg-white hover:border-violet-400 hover:bg-violet-50 hover:-translate-y-1";
-                } else if (
-                  feedback.correct_option?.id === option.id
-                ) {
-                  className +=
-                    "border-emerald-500 bg-emerald-100 text-emerald-900";
-                } else if (
-                  isSelected &&
-                  feedback.is_correct === false
-                ) {
-                  className +=
-                    "border-red-500 bg-red-100 text-red-900";
+                  state = isSelected ? "picked" : "idle";
+                } else if (isCorrectOption) {
+                  state = "correct";
+                } else if (isSelected) {
+                  state = "incorrect";
                 } else {
-                  className +=
-                    "border-slate-200 bg-slate-100 text-slate-400";
+                  state = "dimmed";
                 }
-
-                const labels = ["A", "B", "C", "D"];
 
                 return (
                   <button
                     key={option.id}
+                    type="button"
+                    className="q-option"
+                    data-state={state}
+                    style={{ "--q-i": index } as CSSProperties}
                     onClick={() => handleAnswer(option.id)}
                     disabled={submitting || !!feedback}
-                    className={className}
                   >
-                    <span className="inline-flex items-center justify-center w-9 h-9 rounded-xl bg-slate-900 text-white ml-3">
-                      {labels[index]}
+                    <span className="q-option__key" aria-hidden="true">
+                      {OPTION_KEYS[index] ?? index + 1}
                     </span>
 
-                    {option.option_text}
+                    <span className="q-option__text">
+                      {option.option_text}
+                    </span>
 
-                    {feedback &&
-                      feedback.correct_option?.id ===
-                        option.id && (
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">
-                          ✅
-                        </span>
-                      )}
+                    {state === "correct" && (
+                      <span className="q-option__mark">
+                        <CheckIcon />
+                      </span>
+                    )}
 
-                    {feedback &&
-                      isSelected &&
-                      !feedback.is_correct && (
-                        <span className="absolute left-4 top-1/2 -translate-y-1/2 text-2xl">
-                          ❌
-                        </span>
-                      )}
+                    {state === "incorrect" && (
+                      <span className="q-option__mark">
+                        <CrossIcon />
+                      </span>
+                    )}
                   </button>
                 );
               }
             )}
           </div>
+        </section>
+      </main>
 
-          {feedback && (
-            <>
-              <div
-                className={`mt-8 rounded-3xl p-6 text-center ${
-                  feedback.is_correct
-                    ? "bg-emerald-100 text-emerald-900"
-                    : "bg-orange-100 text-orange-900"
-                }`}
-              >
-                <div className="text-5xl mb-3">
-                  {feedback.is_correct ? "🎉" : "😅"}
-                </div>
+      {feedback && (
+        <footer className="q-sheet" data-state={feedbackState} role="status">
+          <div className="q-sheet__inner">
+            <span className="q-sheet__icon">
+              {feedbackState === "correct" ? (
+                <CheckIcon />
+              ) : feedbackState === "timeout" ? (
+                <ClockIcon />
+              ) : (
+                <CrossIcon />
+              )}
+            </span>
 
-                <h2 className="text-2xl font-black mb-3">
-                  {feedback.is_correct
-                    ? "إجابة صحيحة! شطووورة!"
-                    : feedback.timed_out
-                    ? "خلص الوقت! ⏰"
-                    : "مش مشكلة... الجواب الصح فوق 👆"}
-                </h2>
+            <div className="q-sheet__body">
+              <p className="q-sheet__title">
+                {feedback.is_correct
+                  ? "إجابة صحيحة"
+                  : feedback.timed_out
+                  ? "انتهى الوقت"
+                  : "إجابة غير صحيحة"}
+              </p>
 
-                <p className="text-lg font-semibold">
-                  {feedback.explanation}
-                </p>
-              </div>
+              <p className="q-sheet__text">{feedback.explanation}</p>
+            </div>
 
-              <div className="mt-6 text-center">
-                <button
-                 onClick={async () => {
-  if (currentIndex < data.questions.length - 1) {
-    setCurrentIndex((current) => current + 1);
-    setSelectedOptionId(null);
-    setFeedback(null);
-    return;
-  }
-
-  try {
-    await finishPlayerTurn(
-      Number(sessionId),
-      Number(playerSlot)
-    );
-
-    if (Number(playerSlot) === 1) {
-      navigate(`/game/session/${sessionId}/player/2`);
-    } else {
-      navigate(`/game/session/${sessionId}/results`);
-    }
-  } catch (err) {
-    setError(
-      err instanceof Error
-        ? err.message
-        : "تعذر إنهاء الجولة"
-    );
-  }
-}}
-                  className="bg-gradient-to-r from-violet-600 to-fuchsia-600 hover:from-violet-700 hover:to-fuchsia-700 text-white font-black py-3 px-8 rounded-2xl transition-all"
-                >
-                  {currentIndex < data.questions.length - 1
-                    ? "السؤال التالي ➡️"
-                    : "انتهيت من الأسئلة ✨"}
-                </button>
-
-              </div>
-            </>
-          )}
-        </div>
-      </div>
+            <button
+              type="button"
+              className="q-btn q-btn--primary"
+              onClick={handleNext}
+              autoFocus
+            >
+              {isLastQuestion ? "إنهاء الجولة" : "السؤال التالي"}
+              <ArrowIcon />
+            </button>
+          </div>
+        </footer>
+      )}
     </div>
   );
 }
