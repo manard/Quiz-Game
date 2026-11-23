@@ -6,3 +6,5 @@ https://hasaadx.com/game/tug/class?token=440284da07295fef60a5c3e7bbf2fda5
 
 
 https://hasaadx.com/s/34qpbv6cfm
+
+https://hasaadx.com/s/hi3z2fmtde
